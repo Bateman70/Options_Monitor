@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 import os
@@ -8,17 +9,13 @@ from tastytrade import Account, Session
 # ==========================================
 # 1. CREDENTIALS & CONFIG
 # ==========================================
-CLIENT_SECRET = "5e10561cdaddd6108df00faf0bb7ef36199f9b62".strip()
-REFRESH_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6InJ0K2p3dCIsImtpZCI6IkczcmlINmJrRHRXT3Jrb2xaZmRBVHpkZC1mMnFiNkNRM0xpd1RmQ1lQOU0iLCJqa3UiOiJodHRwczovL2FwaS50YXN0eXRyYWRlLmNvbS9vYXV0aC9qd2tzIn0.eyJpc3MiOiJodHRwczovL2FwaS50YXN0eXRyYWRlLmNvbSIsInN1YiI6IlViMDAzYWI2Yi0wMTU2LTQ4ODYtODA4Yi0zZjI5ZjRjYjQ4ODMiLCJpYXQiOjE3ODk4NTU5ODcsImF1ZCI6IjA3NmRlMzQxLTNhYjAtNGVhZi1hMWFhLTFmMzY4MDNiYzQ2MCIsImdyYW50X2lkIjoiRzg0MDcxNjMyLTFjZDctNDE0Yy04N2IzLTdjMTVmZjA3NDExNCIsInNjb3BlIjoicmVhZCB0cmFkZSBvcGVuaWQifQ.WNhMr_2ff_-vEgm1IqKwA_J8ea-sUMWMaVdXspT6xZ9uuDgxaEtsGS26KuQSQuwpPNpvG_gGrjHU_e_S0XrqCg".strip()
+CLIENT_SECRET = os.environ.get("TASTY_CLIENT_SECRET", "").strip()
+REFRESH_TOKEN = os.environ.get("TASTY_REFRESH_TOKEN", "").strip()
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-TELEGRAM_BOT_TOKEN = "8530007402:AAH6obNBVLvrAIIJPGlt4ta9LUqbRem-_QQ".strip()
-TELEGRAM_CHAT_ID = "5721439628".strip()
-
-# Alert thresholds
-PROFIT_TARGET_PCT = 0.50  # Alert when spread hits 50% profit
-DTE_DEFENSE_THRESHOLD = (
-    21  # Alert when credit spread enters 21 days to expiration
-)
+PROFIT_TARGET_PCT = float(os.environ.get("PROFIT_TARGET_PCT", "0.50"))
+DTE_DEFENSE_THRESHOLD = int(os.environ.get("DTE_DEFENSE_THRESHOLD", "21"))
 
 
 # ==========================================
@@ -39,11 +36,6 @@ def send_telegram(text: str):
 
 
 def parse_occ_symbol(symbol: str):
-  """Parses OCC symbols (e.g.
-
-  'SPY   261016P00560000') into: (underlying, expiration_date, option_type,
-  strike_price)
-  """
   match = re.match(r"^([A-Z\s]+?)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", symbol)
   if not match:
     return None
@@ -60,14 +52,14 @@ def parse_occ_symbol(symbol: str):
 # ==========================================
 # 3. CORE MONITORING & SPREAD GROUPING
 # ==========================================
-def run_monitor():
+async def run_monitor():
   print("Connecting to Tastytrade...")
   session = Session(CLIENT_SECRET, REFRESH_TOKEN)
 
-  # Synchronous calls (no await)
-  accounts = Account.get(session)
+  # Handles async on Render Linux environment
+  accounts = await Account.get(session)
   account = accounts[0]
-  positions = account.get_positions(session)
+  positions = await account.get_positions(session)
 
   # Filter equity options only
   option_positions = [
@@ -85,7 +77,6 @@ def run_monitor():
       f" {len(option_positions)} option leg(s)..."
   )
 
-  # Group positions by (Underlying, Expiration Date)
   grouped = defaultdict(list)
   for p in option_positions:
     parsed = parse_occ_symbol(p.symbol)
@@ -98,7 +89,7 @@ def run_monitor():
           "qty": int(p.quantity),
           "open_price": float(p.average_open_price),
           "mark_price": float(p.close_price),
-          "side": p.quantity_direction,  # 'Long' or 'Short'
+          "side": p.quantity_direction,
       })
 
   alerts = []
@@ -107,7 +98,6 @@ def run_monitor():
   for (underlying, exp_date), legs in grouped.items():
     dte = (exp_date - today).days
 
-    # Strategy classification
     total_legs = len(legs)
     strategy = "Option Position"
     if total_legs == 1:
@@ -126,7 +116,6 @@ def run_monitor():
     elif total_legs == 4:
       strategy = "Iron Condor"
 
-    # Calculate Net Credit vs. Current Net Mark for the combo
     net_open_credit = 0.0
     net_mark_cost = 0.0
 
@@ -140,11 +129,9 @@ def run_monitor():
         for l in sorted(legs, key=lambda x: x["strike"])
     )
 
-    # Evaluate Credit Trades
     if net_open_credit > 0:
       profit_pct = (net_open_credit - net_mark_cost) / net_open_credit
 
-      # Condition A: 50% Profit Target Hit
       if profit_pct >= PROFIT_TARGET_PCT:
         alerts.append(
             f"🎯 *TAKE PROFIT: {underlying} {strategy}*\n"
@@ -154,8 +141,6 @@ def run_monitor():
             f"• Open Credit: ${net_open_credit:.2f} | Current Mark:"
             f" ${net_mark_cost:.2f}"
         )
-
-      # Condition B: 21 DTE Defense / Management Rule
       elif dte <= DTE_DEFENSE_THRESHOLD:
         alerts.append(
             f"⏳ *TIME DEFENSE: {underlying} {strategy}*\n"
@@ -165,7 +150,6 @@ def run_monitor():
             "• Action: Consider rolling untested side or taking off risk."
         )
 
-  # Dispatch alerts if any conditions were met
   if alerts:
     header = "🚨 *Tastytrade Options Alert*\n\n"
     send_telegram(header + "\n\n".join(alerts))
@@ -175,4 +159,4 @@ def run_monitor():
 
 
 if __name__ == "__main__":
-  run_monitor()
+  asyncio.run(run_monitor())
