@@ -7,13 +7,19 @@ import requests
 from tastytrade import Account, Session
 from tastytrade.instruments import Equity
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ==========================================
 # 1. CREDENTIALS & CONFIG
 # ==========================================
 CLIENT_SECRET = os.environ.get("TASTY_CLIENT_SECRET", "").strip()
 REFRESH_TOKEN = os.environ.get("TASTY_REFRESH_TOKEN", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5721439628").strip()
 
 # Thresholds
 PROFIT_TARGET_PCT = float(os.environ.get("PROFIT_TARGET_PCT", "0.50"))      # +50% profit target
@@ -62,7 +68,7 @@ async def get_underlying_prices(session: Session, symbols: set) -> dict:
     prices = {}
     for sym in symbols:
         try:
-            equity = await Equity.get_equity(session, sym)
+            equity = Equity.get_equity(session, sym)
             # Fetch market quote/closing price
             if equity:
                 prices[sym] = float(equity.last_price or 0.0)
@@ -78,9 +84,9 @@ async def run_monitor():
     print("Connecting to Tastytrade...")
     session = Session(CLIENT_SECRET, REFRESH_TOKEN)
 
-    accounts = await Account.get(session)
+    accounts = Account.get(session)
     account = accounts[0]
-    positions = await account.get_positions(session)
+    positions = account.get_positions(session)
 
     option_positions = [p for p in positions if p.instrument_type == "Equity Option"]
     if not option_positions:
@@ -161,7 +167,7 @@ async def run_monitor():
                     f"• Spot Price: `{spot_str}` | Strikes: `{strikes_desc}`\n"
                     f"• Expiry: `{exp_date}` ({dte} DTE)\n"
                     f"• Realized Gain: *{profit_pct * 100:.1f}%* (Target: {PROFIT_TARGET_PCT * 100:.0f}%)\n"
-                    f"• Open Credit: ${net_open_credit:.2f} \vert{} Current Mark:${net_mark_cost:.2f}"
+                    f"• Open Credit: ${net_open_credit:.2f} | Current Mark: ${net_mark_cost:.2f}"
                 )
 
             # ---------------------------------------------------------
@@ -173,7 +179,7 @@ async def run_monitor():
                     f"• Spot Price: `{spot_str}` | Strikes: `{strikes_desc}`\n"
                     f"• Expiry: `{exp_date}` ({dte} DTE)\n"
                     f"• Drawdown: *{profit_pct * 100:.1f}%* (Limit: -{STOP_LOSS_PCT * 100:.0f}%)\n"
-                    f"• Open Credit: ${net_open_credit:.2f} \vert{} Current Mark:${net_mark_cost:.2f}\n"
+                    f"• Open Credit: ${net_open_credit:.2f} | Current Mark: ${net_mark_cost:.2f}\n"
                     f"• *Action:* Max loss limit breached — evaluate closing or hedging."
                 )
 
